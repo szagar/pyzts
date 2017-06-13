@@ -1,0 +1,72 @@
+# Logfile created on 2017-06-13 17:24:27 -0400 by logger.rb/44203
+I, [2017-06-13T17:24:27.689256 #908]  INFO -- : *** Below you'll find the most recent exception thrown, this will likely (but not certainly) be the exception that made your application exit abnormally ***
+E, [2017-06-13T17:24:27.689330 #908] ERROR -- : No such file or directory @ rb_sysopen - /Users/szagar/zts/etc/ib_zagbook.yml (Errno::ENOENT)
+/Users/szagar/.rvm/rubies/ruby-2.1.1/lib/ruby/2.1.0/psych.rb:464:in `initialize'
+/Users/szagar/.rvm/rubies/ruby-2.1.1/lib/ruby/2.1.0/psych.rb:464:in `open'
+/Users/szagar/.rvm/rubies/ruby-2.1.1/lib/ruby/2.1.0/psych.rb:464:in `load_file'
+/Users/szagar/work/pyzts/daemons/ibgw2filed/lib/configuration.rb:8:in `initialize'
+/Users/szagar/work/pyzts/daemons/ibgw2filed/lib/ib_gw_2file.rb:159:in `new'
+/Users/szagar/work/pyzts/daemons/ibgw2filed/lib/ib_gw_2file.rb:159:in `initialize'
+/Users/szagar/work/pyzts/daemons/ibgw2filed/libexec/ibgwd-daemon.rb:24:in `new'
+/Users/szagar/work/pyzts/daemons/ibgw2filed/libexec/ibgwd-daemon.rb:24:in `start_broker'
+/Users/szagar/work/pyzts/daemons/ibgw2filed/libexec/ibgwd-daemon.rb:51:in `<top (required)>'
+/Users/szagar/.rvm/gems/ruby-2.1.1@zts/gems/daemon-kit-0.3.1/lib/daemon_kit/application.rb:38:in `require'
+/Users/szagar/.rvm/gems/ruby-2.1.1@zts/gems/daemon-kit-0.3.1/lib/daemon_kit/application.rb:38:in `run'
+/Users/szagar/.rvm/gems/ruby-2.1.1@zts/gems/daemon-kit-0.3.1/lib/daemon_kit/application.rb:21:in `exec'
+./bin/ibgwd:8:in `<main>'
+I, [2017-06-13T17:24:27.689396 #908]  INFO -- : *** Below you'll find all the exception objects in memory, some of them may have been thrown in your application, others may just be in memory because they are standard exceptions ***
+E, [2017-06-13T17:24:27.696402 #908] ERROR -- : stream closed (IOError)
+
+E, [2017-06-13T17:24:27.696542 #908] ERROR -- : failed to allocate memory (NoMemoryError)
+
+E, [2017-06-13T17:24:27.696587 #908] ERROR -- : stack level too deep (SystemStackError)
+
+E, [2017-06-13T17:24:27.696739 #908] ERROR -- : exception reentered (fatal)
+
+E, [2017-06-13T17:24:27.700247 #908] ERROR -- : No such file or directory @ rb_sysopen - /Users/szagar/work/pyzts/daemons/ibgw2filed/log/backtrace-20170613172427-908.log (Errno::ENOENT)
+/Users/szagar/.rvm/rubies/ruby-2.1.1/lib/ruby/2.1.0/logger.rb:592:in `initialize'
+/Users/szagar/.rvm/rubies/ruby-2.1.1/lib/ruby/2.1.0/logger.rb:592:in `open'
+/Users/szagar/.rvm/rubies/ruby-2.1.1/lib/ruby/2.1.0/logger.rb:592:in `open_logfile'
+/Users/szagar/.rvm/rubies/ruby-2.1.1/lib/ruby/2.1.0/logger.rb:549:in `initialize'
+/Users/szagar/.rvm/rubies/ruby-2.1.1/lib/ruby/2.1.0/logger.rb:318:in `new'
+/Users/szagar/.rvm/rubies/ruby-2.1.1/lib/ruby/2.1.0/logger.rb:318:in `initialize'
+/Users/szagar/.rvm/gems/ruby-2.1.1@zts/gems/safely-0.3.2/lib/safely/backtrace.rb:24:in `new'
+/Users/szagar/.rvm/gems/ruby-2.1.1@zts/gems/safely-0.3.2/lib/safely/backtrace.rb:24:in `log_exceptions'
+/Users/szagar/.rvm/gems/ruby-2.1.1@zts/gems/safely-0.3.2/lib/safely/backtrace.rb:10:in `block in enable!'
+E, [2017-06-13T17:24:27.700321 #908] ERROR -- : No such file or directory @ rb_sysopen - /Users/szagar/zts/etc/ib_zagbook.yml (Errno::ENOENT)
+/Users/szagar/.rvm/rubies/ruby-2.1.1/lib/ruby/2.1.0/psych.rb:464:in `initialize'
+/Users/szagar/.rvm/rubies/ruby-2.1.1/lib/ruby/2.1.0/psych.rb:464:in `open'
+/Users/szagar/.rvm/rubies/ruby-2.1.1/lib/ruby/2.1.0/psych.rb:464:in `load_file'
+/Users/szagar/work/pyzts/daemons/ibgw2filed/lib/configuration.rb:8:in `initialize'
+/Users/szagar/work/pyzts/daemons/ibgw2filed/lib/ib_gw_2file.rb:159:in `new'
+/Users/szagar/work/pyzts/daemons/ibgw2filed/lib/ib_gw_2file.rb:159:in `initialize'
+/Users/szagar/work/pyzts/daemons/ibgw2filed/libexec/ibgwd-daemon.rb:24:in `new'
+/Users/szagar/work/pyzts/daemons/ibgw2filed/libexec/ibgwd-daemon.rb:24:in `start_broker'
+/Users/szagar/work/pyzts/daemons/ibgw2filed/libexec/ibgwd-daemon.rb:51:in `<top (required)>'
+/Users/szagar/.rvm/gems/ruby-2.1.1@zts/gems/daemon-kit-0.3.1/lib/daemon_kit/application.rb:38:in `require'
+/Users/szagar/.rvm/gems/ruby-2.1.1@zts/gems/daemon-kit-0.3.1/lib/daemon_kit/application.rb:38:in `run'
+/Users/szagar/.rvm/gems/ruby-2.1.1@zts/gems/daemon-kit-0.3.1/lib/daemon_kit/application.rb:21:in `exec'
+./bin/ibgwd:8:in `<main>'
+E, [2017-06-13T17:24:27.701354 #908] ERROR -- : Value will be available once the pipeline executes. (Redis::FutureNotReady)
+
+E, [2017-06-13T17:24:27.703193 #908] ERROR -- : No such file or directory @ rb_sysopen - /Users/szagar/work/pyzts/daemons/ibgw2filed/log/development.log (Errno::ENOENT)
+/Users/szagar/.rvm/rubies/ruby-2.1.1/lib/ruby/2.1.0/logger.rb:592:in `initialize'
+/Users/szagar/.rvm/rubies/ruby-2.1.1/lib/ruby/2.1.0/logger.rb:592:in `open'
+/Users/szagar/.rvm/rubies/ruby-2.1.1/lib/ruby/2.1.0/logger.rb:592:in `open_logfile'
+/Users/szagar/.rvm/rubies/ruby-2.1.1/lib/ruby/2.1.0/logger.rb:549:in `initialize'
+/Users/szagar/.rvm/rubies/ruby-2.1.1/lib/ruby/2.1.0/logger.rb:318:in `new'
+/Users/szagar/.rvm/rubies/ruby-2.1.1/lib/ruby/2.1.0/logger.rb:318:in `initialize'
+/Users/szagar/.rvm/gems/ruby-2.1.1@zts/gems/daemon-kit-0.3.1/lib/daemon_kit/abstract_logger.rb:208:in `new'
+/Users/szagar/.rvm/gems/ruby-2.1.1@zts/gems/daemon-kit-0.3.1/lib/daemon_kit/abstract_logger.rb:208:in `create_standard_logger'
+/Users/szagar/.rvm/gems/ruby-2.1.1@zts/gems/daemon-kit-0.3.1/lib/daemon_kit/abstract_logger.rb:191:in `create_logger'
+/Users/szagar/.rvm/gems/ruby-2.1.1@zts/gems/daemon-kit-0.3.1/lib/daemon_kit/abstract_logger.rb:146:in `logger'
+/Users/szagar/.rvm/gems/ruby-2.1.1@zts/gems/daemon-kit-0.3.1/lib/daemon_kit/abstract_logger.rb:142:in `level='
+/Users/szagar/.rvm/gems/ruby-2.1.1@zts/gems/daemon-kit-0.3.1/lib/daemon_kit/initializer.rb:175:in `initialize_logger'
+/Users/szagar/.rvm/gems/ruby-2.1.1@zts/gems/daemon-kit-0.3.1/lib/daemon_kit/initializer.rb:106:in `after_daemonize'
+/Users/szagar/.rvm/gems/ruby-2.1.1@zts/gems/daemon-kit-0.3.1/lib/daemon_kit/initializer.rb:59:in `continue!'
+/Users/szagar/.rvm/gems/ruby-2.1.1@zts/gems/daemon-kit-0.3.1/lib/daemon_kit/application.rb:93:in `running!'
+/Users/szagar/work/pyzts/daemons/ibgw2filed/libexec/ibgwd-daemon.rb:5:in `<top (required)>'
+/Users/szagar/.rvm/gems/ruby-2.1.1@zts/gems/daemon-kit-0.3.1/lib/daemon_kit/application.rb:38:in `require'
+/Users/szagar/.rvm/gems/ruby-2.1.1@zts/gems/daemon-kit-0.3.1/lib/daemon_kit/application.rb:38:in `run'
+/Users/szagar/.rvm/gems/ruby-2.1.1@zts/gems/daemon-kit-0.3.1/lib/daemon_kit/application.rb:21:in `exec'
+./bin/ibgwd:8:in `<main>'

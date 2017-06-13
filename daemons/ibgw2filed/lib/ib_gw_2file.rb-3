@@ -1,0 +1,1013 @@
+#!/usr/bin/env ruby
+# encoding: utf-8
+
+$: << "#{ENV['ZTS_HOME']}/etc"
+$: << "#{ENV['ZTS_HOME']}/lib"
+$: << "#{ENV['ZTS_HOME']}/ib"
+
+require 'store_mixin'
+require 'order_struct'
+require "s_m"
+require "e_wrapper_2file"
+require "ib-ruby"
+require "json"
+require "my_config"
+require 'configuration'
+require 'mkt_subscriptions'
+require "log_helper"
+
+module EchoServer
+  def initialize(gw,ew)
+    @gw = gw
+    @ew = ew
+    puts "EchoServer#initialize: @gw=#{@gw}"
+    puts "EchoServer#initialize: @ew=#{@ew}"
+  end
+
+  def post_init
+    puts "-- someone connected to the echo server!"
+  end
+
+  def receive_data data
+    puts "GOT IT ******************************** #{data}\n"
+    args = []
+    begin
+      args = data.chomp.split(' ')
+      command = args.shift
+    rescue
+      puts "WARNING: problems with data: #{data}"
+    end
+    return unless command
+    puts "command=#{command}"
+    puts "args=#{args}"
+    case command.downcase
+    when "init"
+      args.each { |tkr| @gw.subscribe_ticks(tkr) }
+    when "size"
+      @gw.print_size_options
+    when "atrsl"
+      @gw.print_atr_stop_loss
+    when "lvc"
+      @gw.print_lvc
+    when "orders"
+      @gw.print_orders
+    when "acct"
+      @gw.print_account
+    when "portf"
+      @gw.print_portf
+    when "s"         # sell : bs IBM 50 => buy at offer, risk 50
+      @gw.s_order(tkr: args[0], pos_risk: args[1])
+    when "b"         # buy : bs IBM 50 => buy at offer, risk 50
+      @gw.b_order(tkr: args[0], pos_risk: args[1])
+    when "bs"         # buy stop: bs IBM 105.25 101.25 50 => stop entry@105.25 stop loss@101.25 risk 50
+      @gw.bs_order(tkr: args[0], stop_px: args[1], stop_ex: args[2], pos_risk: args[3])
+    when "ss"         # sell stop
+      @gw.ss_order(tkr: args[0], stop_px: args[1], stop_ex: args[2], pos_risk: args[3])
+    when "r2g"         # red to green
+      @gw.r2g_order(tkr: args[0], pos_risk: args[1]||50)
+    when "g2r"         # green to red
+      @gw.g2r_order(tkr: args[0], pos_risk: args[1]||50)
+    when "exit","quit","q"
+      exit 0
+    else
+      puts "command: #{command} not recognized"
+    end
+    send_data ">>> you sent: #{data}  command: #{command}  args: #{args}\n"
+  end
+end
+
+class IbGw
+  include LogHelper
+  include Store
+
+  attr_reader :thread_id
+  attr_reader :sid_map, :tkr_map
+  attr_reader :ib, :mkt_data_server
+  attr_reader :lvc, :account, :portf, :working_orders
+
+  def initialize(broker,opts={})
+    show_info "IbGw#initialize"
+    DaemonKit.logger.level = :info
+
+    puts "Broker is #{broker}"
+    broker_config = opts[:config] ||=
+             Configuration.new({filename: 'ib.yml',
+                                env:      broker})
+  
+    @contracts = {}
+    @sid_map = {}
+    @tkr_map = {}
+    @lvc     = {}
+    @working_orders  = {}
+    @account = {}
+    @portf   = {}
+    @this_broker = broker
+    @mkt_subs           = MktSubscriptions.instance
+    @mkt_data_server    = broker_config.md_status == "true" ? true : false
+    @mkt_data_server_id = broker_config.md_id
+    puts "Ticker Plant #{@mkt_data_server_id} is #{@mkt_data_server ? 'on' : 'off'}"
+ 
+    today = DateTimeHelper::integer_date
+    ib_data_dir = "/Users/szagar/zts/data/ibdata"
+    (@fh_warn   = File.open("#{ib_data_dir}/#{today}_warnings.csv", 'w')).sync = true
+    (@fh_submissions = File.open("#{ib_data_dir}/#{today}_submissions.csv", 'w')).sync = true
+
+    submission_file_hdr
+
+    ib_app = opts[:ib_app] ||= "gw"
+    port   = broker_config.send("#{ib_app}_port")
+    puts "@ib = IB::Connection.new :host      => #{broker_config.host}, \
+                                   :client_id => #{broker_config.client_id}, \
+                                   :port      => #{port}"
+    @ib = IB::Connection.new(:host      => broker_config.host,
+                             :client_id => broker_config.client_id,
+                             :port      => port)
+
+    puts "@ib=#{@ib}"
+    @ib.wait_for :NextValidId
+ 
+    @progname    = File.basename(__FILE__,".rb")
+    @proc_name   = "ib_gateway-#{broker}"
+    @local_subs  = {}
+
+    @sec_master = SM.instance
+
+    show_info "IB Gateway, program name : #{@progname}"
+    show_info "            proc name    : #{@proc_name}"
+    show_info "            tkr plant    : #{@mkt_data_server_id} is #{mkt_data_server ? 'on' : 'off'}"
+
+    start_ewrapper
+
+    @thread_id = Thread.new {
+      EventMachine::run {
+        EventMachine::start_server "127.0.0.1", 8081, EchoServer, self, @ew
+        puts 'running echo server on 8081'
+      }
+    }
+
+    #show_info "Start EM thread"
+    #@thread_id = Thread.new { EventMachine.run }
+    if defined?(JRUBY_VERSION)
+     # on the JVM, event loop startup takes longer and .next_tick behavior
+     # seem to be a bit different. Blocking current thread for a moment helps.
+     sleep 0.5
+    end
+
+  end
+
+  def active_mkt_data_server?
+    @mkt_data_server
+  end
+  
+  def submission_file_hdr
+    @fh_submissions.write 'ib_order_id,'
+    @fh_submissions.write 'tkr,'
+    @fh_submissions.write 'quantity,'
+    @fh_submissions.write 'limit_price,'
+    @fh_submissions.write 'aux_price,'
+    @fh_submissions.write 'side,'
+    @fh_submissions.write 'order_type,'
+    @fh_submissions.write 'parent_id,'
+    @fh_submissions.write 'transmit,'
+    @fh_submissions.write 'created_at,'
+    @fh_submissions.write 'updated_at,'
+    @fh_submissions.write 'discretionary_amount,'
+    @fh_submissions.write 'tif,'
+    @fh_submissions.write 'open_close,'
+    @fh_submissions.write 'origin,'
+    @fh_submissions.write 'short_sale_slot,'
+    @fh_submissions.write 'trigger_method,'
+    @fh_submissions.write 'oca_type,'
+    @fh_submissions.write 'auction_strategy,'
+    @fh_submissions.write 'designated_location,'
+    @fh_submissions.write 'exempt_code,'
+    @fh_submissions.write 'display_size,'
+    @fh_submissions.write 'continuous_update,'
+    @fh_submissions.write 'delta_neutral_con_id,'
+    @fh_submissions.write 'algo_strategy,'
+    @fh_submissions.write 'what_if,'
+    @fh_submissions.write 'leg_prices,'
+    @fh_submissions.write 'algo_params,'
+    @fh_submissions.write "combo_params\n"
+  end
+
+  def active_ticker?(tkr)
+    if not @lvc.has_key?(@tkr_map[tkr])
+      puts "Ticker #{tkr} not active"
+      return false
+    end
+    return true
+  end
+
+  def g2r_order(o)
+    tkr = o[:tkr]
+    return if not active_ticker?(tkr)
+    sid = @tkr_map[tkr]
+    last_price = @lvc[sid][:last_price]
+    prev_close = @lvc[sid][:prev_close]
+    if last_price < prev_close
+      @fh_warn.write "g2r_order: #{tkr} Price already red, no order staged"
+      return
+    end
+    stop_loss = prev_close + @lvc[sid][:atr14]*0.5
+    ss_order(tkr: tkr, stop_px: prev_close, stop_ex: stop_loss, pos_risk: o[:pos_risk])
+  end
+
+  def r2g_order(o)
+    tkr = o[:tkr]
+    return if not active_ticker?(tkr)
+    sid = @tkr_map[tkr]
+    last_price = @lvc[sid][:last_price]
+    prev_close = @lvc[sid][:prev_close]
+    if last_price > prev_close
+      puts "Price already green, no order staged"
+      return
+    end
+    #stop_loss = prev_close - 0.20
+    stop_loss = prev_close - @lvc[sid][:atr14]*0.5
+    puts "r2g_order: bs_order(tkr: #{tkr}, stop_px: #{prev_close}, stop_ex: #{stop_loss}, pos_risk: #{o[:pos_risk]})"
+    bs_order(tkr: tkr, stop_px: prev_close, stop_ex: stop_loss, pos_risk: o[:pos_risk])
+  end
+
+  def b_order(o)
+    tkr = o[:tkr]
+    return if not active_ticker?(tkr)
+    setup = "descretionary"
+    sid = @tkr_map[tkr]
+    working_orders[tkr] ||= {}
+    #limit_price = (@lvc[sid][:ask_price]).round(2)
+    ask_price = @lvc[sid][:ask_price]
+    mid_price = (ask_price + @lvc[sid][:bid_price])/2
+    limit_price = [ask_price,mid_price].min.round(2)
+    #limit_price = (@lvc[sid][:bid_price]+0.01).round(2)
+    puts "b_order: #{@lvc[sid]}"
+    atr = @lvc[sid][:atr14]
+    puts "b_order: atr=#{atr}"
+    stop_loss = (limit_price - atr * 0.5)
+    profit_price = (limit_price + atr * 2)
+    puts "\nb_order: limit_price=#{limit_price}/#{limit_price.class}"
+    #puts "b_order: stop_loss=#{stop_loss}/#{stop_loss.class}"
+    puts "here"
+    puts "stop_loss = #{stop_loss}"
+    stop_loss = stop_loss.round(2)
+    puts "stop_loss = #{stop_loss}"
+    if (limit_price-stop_loss) < 0.05 
+      return 
+    end
+    puts "now here"
+    puts o[:pos_risk].to_f
+    puts limit_price-stop_loss
+    size = (o[:pos_risk].to_f / (limit_price-stop_loss)).round(0)
+    puts "buy #{tkr} @#{limit_price}"
+    #-- Parent Order --
+    order[:tkr] => tkr
+    order[:entry_order] => {
+            :id          => buy_order.local_id,
+            :action      => "BUY",
+            :order_qty   => size,
+            :order_type  => "LMT",
+            :descr       => setup,
+            :status      => "staged",
+            :filled    => 0}
+    #-- Child STOP --
+    order[:stop_loss] => {
+            :action      => "SELL",
+            :order_qty   => size,
+            :order_type  => "STP",
+            :stop_price  => stop_loss,
+            :descr       => "init stop loss",
+            :status      => "staged",
+            :tif         => "GTC",
+            :filled    => 0}
+          }
+    #-- Profit Target --
+    order[:profit_order] => {
+            :action => 'SELL',
+            :order_qty => size,
+            :order_type => 'LMT',
+            :limit_price => profit_price,
+            :descr       => "profit target",
+            :status      => "staged",
+            :tif    => 'GTC',
+            :filled    => 0}
+    place_order order
+  end 
+ 
+ 
+ 
+    #-- Parent Order --
+    buy_order = IB::Order.new :total_quantity => size,
+                              :limit_price => limit_price,
+                              :action => 'BUY',
+                              :tif    => 'GTC',
+                              :order_type => 'LMT',
+                              :algo_strategy => '',
+                              #:account => account_code,
+                              :transmit => true
+    #ib.wait_for :NextValidId
+    place_order buy_order, @contracts[tkr]
+    ib.wait_for :NextValidId
+    
+     #-- Child STOP --
+    puts "send stop order"
+    stop_order = IB::Order.new :total_quantity => size,
+                               :limit_price => 0,
+                               :aux_price => stop_loss,
+                               :action => 'SELL',
+                               :tif    => 'GTC',
+                               :order_type => 'STP',
+                               #:account => account_code,
+                               :parent_id => buy_order.local_id,
+                               :transmit => true
+    #ib.wait_for :NextValidId
+    place_order stop_order, @contracts[tkr]
+    orders[tkr][:stoploss_order] = {:id => stop_order.local_id,
+                                    :descr => "init stop loss",
+                                    :status    => "staged"}
+    
+    #-- Profit Target --
+    profit_order = IB::Order.new :total_quantity => size,
+                                 :limit_price => profit_price,
+                                 :action => 'SELL',
+                                 :tif    => 'GTC',
+                                 :order_type => 'LMT',
+                                 :parent_id => buy_order.local_id,
+                                 :transmit => true
+    place_order profit_order, @contracts[tkr]
+    orders[tkr][:profit_order] = {:id => profit_order.local_id,
+                                  :descr => "profit target",
+                                  :status    => "staged"}
+  end
+
+  def s_order(o)
+    tkr = o[:tkr]
+    return if not active_ticker?(tkr)
+    sid = @tkr_map[tkr]
+    orders[tkr] |= {}
+    #limit_price = (@lvc[sid][:bid_price]).round(2)
+    #limit_price = (@lvc[sid][:ask_price]).round(2)
+    bid_price = @lvc[sid][:bid_price]
+    mid_price = (@lvc[sid][:ask_price] + bid_price)/2
+    limit_price = [bid_price,mid_price].max.round(2)
+    puts "s_order: #{@lvc[sid]}"
+    atr = @lvc[sid][:atr14]
+    puts "s_order: atr=#{atr}"
+    stop_loss = (limit_price + atr * 0.5)
+    oneR = stop_loss-limit_price
+    puts "s_order: limit_price=#{limit_price}/#{limit_price.class}"
+    puts "stop_loss = #{stop_loss}"
+    stop_loss = stop_loss.round(2)
+    puts "stop_loss = #{stop_loss}"
+    if oneR < 0.05 
+      return 
+    end
+    size = (o[:pos_risk].to_f / oneR).round(0)
+    puts "sell #{size}  #{tkr} @#{limit_price}"
+    #-- Parent Order --
+    sell_entry = IB::Order.new :total_quantity => size,
+                              :limit_price => limit_price,
+                              :action => 'SELL',
+                              :tif    => 'GTC',
+                              :order_type => 'LMT',
+                              :algo_strategy => '',
+                              #:account => account_code,
+                              :transmit => true
+    #ib.wait_for :NextValidId
+    place_order sell_entry, @contracts[tkr]
+    
+     #-- Child STOP --
+    puts "send stop order"
+    puts "IB::Order.new :total_quantity => #{size},"
+    stop_order = IB::Order.new :total_quantity => size,
+                               :limit_price => 0,
+                               :aux_price => stop_loss,
+                               :action => 'BUY',
+                               :tif    => 'GTC',
+                               :order_type => 'STP',
+                               #:account => account_code,
+                               :parent_id => sell_entry.local_id,
+                               :transmit => true
+    #ib.wait_for :NextValidId
+    place_order stop_order, @contracts[tkr]
+  end
+
+  def bl_order(o)
+    tkr = o[:tkr]
+    return if not active_ticker?(tkr)
+    orders[tkr] |= {}
+  end
+
+  def bs_order(o)
+    tkr = o[:tkr]
+    return if not active_ticker?(tkr)
+    orders[tkr] |= {}
+    size = (o[:pos_risk].to_f / (o[:stop_px].to_f-o[:stop_ex].to_f)).to_i
+    puts "stage order to buy #{size} #{o[:tkr]} @#{o[:stop_px]}, risking #{o[:pos_risk]}"
+    stop_price = (o[:stop_px].to_f).round(2)
+    stop_loss  = (o[:stop_ex].to_f).round(2)
+    limit_price = ((stop_price > 10) ? stop_price+0.38 : stop_price+0.12).round(2)
+    #limit_price = 0
+    profit_price = (o[:pos_risk].to_f * 4 / size + stop_price).round(2)
+
+    puts "stop_price = #{stop_price}"
+    puts "stop_loss = #{stop_loss}"
+    puts "limit_price = #{limit_price}"
+    puts "profit_price = #{profit_price}"
+
+    #-- Parent Order --
+    puts "send parent order"
+    puts "IB::Order.new :total_quantity => #{size},"
+    puts "              :limit_price => #{limit_price},"
+    puts "              :aux_price => #{stop_price},"
+    puts "              :action => 'BUY',"
+    puts "              :order_type => 'STP',"
+    puts "              :algo_strategy => '',"
+    puts "              #:account => account_code,"
+    puts "              :transmit => true"
+    buy_order = IB::Order.new :total_quantity => size,
+                              :limit_price => limit_price,
+                              :aux_price => stop_price,
+                              :action => 'BUY',
+                              :tif    => 'GTC',
+                              :order_type => 'STPLMT',
+                              :algo_strategy => '',
+                              #:account => account_code,
+                              :transmit => true
+    #ib.wait_for :NextValidId
+    place_order buy_order, @contracts[tkr]
+    
+     #-- Child STOP --
+    puts "send stop order"
+    puts "IB::Order.new :total_quantity => #{size},"
+    puts "              :limit_price => 0,"
+    puts "              :aux_price => #{stop_loss},"
+    puts "              :action => 'SELL',"
+    puts "              :order_type => 'STP',"
+    #puts "              :account => account_code,"
+    puts "              :parent_id => #{buy_order.local_id},"
+    puts "              :transmit => true"
+    stop_order = IB::Order.new :total_quantity => size,
+                               :limit_price => 0,
+                               :aux_price => stop_loss,
+                               :action => 'SELL',
+                               :tif    => 'GTC',
+                               :order_type => 'STP',
+                               #:account => account_code,
+                               :parent_id => buy_order.local_id,
+                               :transmit => true
+    #ib.wait_for :NextValidId
+    place_order stop_order, @contracts[tkr]
+    
+    #-- Profit LMT
+    profit_order = IB::Order.new :total_quantity => size,
+                                 :limit_price => profit_price,
+                                 :action => 'SELL',
+                                 :tif    => 'GTC',
+                                 :order_type => 'LMT',
+                                 #:account => account_code,
+                                 :parent_id => buy_order.local_id,
+                                 :transmit => true
+    place_order profit_order, @contracts[tkr]
+  end
+
+  def ss_order(o)
+    tkr = o[:tkr]
+    return if not active_ticker?(tkr)
+    orders[tkr] |= {}
+    size = (o[:pos_risk].to_f / (o[:stop_ex].to_f-o[:stop_px].to_f)).to_i
+    puts "stage order to sell #{size} #{o[:tkr]} @#{o[:stop_px]}, risking #{o[:pos_risk]}"
+    stop_price = (o[:stop_px].to_f).round(2)
+    stop_loss  = (o[:stop_ex].to_f).round(2)
+    limit_price = ((stop_price > 10) ? stop_price-0.38 : stop_price-0.12).round(2)
+    profit_price = (stop_price - o[:pos_risk].to_f * 4 / size).round(2)
+
+    puts "ss_order: stop_price = #{stop_price}"
+    puts "ss_order: stop_loss = #{stop_loss}"
+    puts "ss_order: limit_price = #{limit_price}"
+    puts "ss_order: profit_price = #{profit_price}"
+
+    #-- Parent Order --
+    puts "send parent order"
+    puts "IB::Order.new :total_quantity => #{size},"
+    puts "              :limit_price => #{limit_price},"
+    puts "              :aux_price => #{stop_price},"
+    puts "              :action => 'SELL',"
+    puts "              :tif    => 'GTC',"
+    puts "              :order_type => 'STPLMT',"
+    puts "              :algo_strategy => '',"
+    puts "              #:account => account_code,"
+    puts "              :transmit => true"
+    entry_order = IB::Order.new :total_quantity => size,
+                              :limit_price => limit_price,
+                              :aux_price => stop_price,
+                              :action => 'SELL',
+                              :tif    => 'GTC',
+                              :order_type => 'STPLMT',
+                              :algo_strategy => '',
+                              #:account => account_code,
+                              :transmit => true
+    #ib.wait_for :NextValidId
+    place_order entry_order, @contracts[tkr]
+    
+     #-- Child STOP --
+    puts "send stop order"
+    puts "IB::Order.new :total_quantity => #{size},"
+    puts "              :limit_price => 0,"
+    puts "              :aux_price => #{stop_loss},"
+    puts "              :action => 'BUY',"
+    puts "              :order_type => 'STP',"
+    #puts "              :account => account_code,"
+    puts "              :parent_id => #{entry_order.local_id},"
+    puts "              :transmit => true"
+    stop_order = IB::Order.new :total_quantity => size,
+                               :limit_price => 0,
+                               :aux_price => stop_loss,
+                               :action => 'BUY',
+                               :tif    => 'GTC',
+                               :order_type => 'STP',
+                               #:account => account_code,
+                               :parent_id => entry_order.local_id,
+                               :transmit => true
+    #ib.wait_for :NextValidId
+    place_order stop_order, @contracts[tkr]
+    
+    #-- Profit LMT
+    puts "send profit order"
+    puts " IB::Order.new :total_quantity => #{size},"
+    puts "               :limit_price => #{profit_price},"
+    puts "               :action => 'BUY',"
+    puts "               :tif    => 'GTC',"
+    puts "               :order_type => 'LMT',"
+    puts "               :parent_id => #{entry_order.local_id},"
+    puts "               :transmit => true"
+    profit_order = IB::Order.new :total_quantity => size,
+                                 :limit_price => profit_price,
+                                 :action => 'BUY',
+                                 :tif    => 'GTC',
+                                 :order_type => 'LMT',
+                                 #:account => account_code,
+                                 :parent_id => entry_order.local_id,
+                                 :transmit => true
+    #ib.wait_for :NextValidId
+    place_order profit_order, @contracts[tkr]
+  end
+
+  #def watch_for_new_orders
+  #  return
+  #  order_hash = JSON.parse(payload)
+  #  $stderr.puts "order_hash=#{order_hash}"
+  #  order = OrderStruct.from_hash(order_hash)
+  #  $stderr.puts "ib_gw: order attributes: #{order.attributes}"
+  #  $stderr.puts "contract = get_contract( #{order.mkt}, #{order.sec_id} )"
+  #  contract = get_contract( order.mkt, order.sec_id )
+  #  action = order.action.upcase
+
+  #  puts "order = IB::Order.new total_quantity: #{order.order_qty.to_i}," \
+  #                            "limit_price: #{order.limit_price || 0}," \
+  #                            "action:"" #{action}," \
+  #                            "order_type => #{order.price_type}," \
+  #                            "order_ref: #{order.pos_id}"
+
+  #  show_info "order = IB::Order.new total_quantity: #{order.order_qty.to_i}," \
+  #                            "limit_price: #{order.limit_price || 0}," \
+  #                            "action:"" #{action}," \
+  #                            "order_type => #{order.price_type}," \
+  #                            "order_ref: #{order.pos_id}"
+  #  ib_order = IB::Order.new :total_quantity => order.order_qty.to_i,
+  #                            :limit_price => order.limit_price || 0,
+  #                            :action => action,
+  #                            :order_type => order.price_type,
+  #                            :order_ref => order.pos_id
+  #  puts ib_order
+
+  #  place_order ib_order, contract
+  #end
+
+  #def watch_for_md_unrequests
+  #  debug "mktdta monitor unreq: #{payload.inspect}(#{payload.class}), routing key is #{headers.routing_key}"
+  #  rec = JSON.parse(payload)
+  #  debug "rec=#{rec.inspect}(#{rec.class})"
+  #  sec_id = rec["sec_id"]
+  #  if sec_id == "all"
+  #    unreq_md(sec_id)
+  #  else
+  #    mkt    = rec['mkt']
+  #    force = rec['force'] || false
+  #    contract = get_contract( mkt, sec_id )
+  #    debug "contract: #{contract.inspect}"
+  #    show_info "market data unrequest: #{contract.attributes['symbol']}(#{sec_id})   mkt(#{mkt})  force(#{force})"
+  #    tkr_id = get_ticker_id( mkt, sec_id ) rescue return
+  #    unreq_md(tkr_id)
+  #  end
+  #end
+
+  def subscribe_admin
+    #msg = JSON.parse(payload, :symbolize_names => true)
+    #command = msg[:command]
+    #params  = msg[:params]
+    #show_info "admin message: command = #{command}"
+    #show_info "admin message: params  = #{params}"
+    #begin
+    #  self.send(command, params) if %W(query_account_data).include? command 
+    #rescue => e
+    #  warn "IbGw: Problem with admin msg: #{payload}"
+    #  warn e.message
+    #end
+  end
+
+  def atr(tkr,pd=14)
+    v = `/Users/szagar/zts/scripts/tools/atr.py -t #{tkr}`.chomp
+    puts "atr  v = #{v}"
+    v.to_f
+  end
+
+  def prev_ohlc(tkr)
+    o,h,l,c = `/Users/szagar/zts/scripts/tools/prev_ohlc.py -t #{tkr}`.chomp.split
+    puts "prev_ohlc  ohlc = #{o}/#{h}/#{l}/#{c}"
+    #"#{o.to_f},#{h.to_f},#{l.to_f},#{c.to_f}"
+    [o.to_f,h.to_f,l.to_f,c.to_f]
+  end
+
+  def init_lvc(tkr)
+    sid = @tkr_map[tkr]
+    ohlc = prev_ohlc(tkr)
+    @lvc[sid] ||= {:bid_price => 0, :bid_size => 0,
+                   :ask_price => 0, :ask_size => 0,
+                   :last_price => 0, :last_size => 0,
+                   :high_price => 0, :high_size => 0,
+                   :low_price => 0, :low_size => 0,
+                   :close_price => 0, :close_size => 0,
+                   :atr14       => atr(tkr),
+                   :prev_high   => ohlc[1],
+                   :prev_low    => ohlc[2],
+                   :prev_close  => ohlc[3],
+                   :volume => 0,
+                   :last_timestamp => 0}
+  end
+
+  def subscribe_ticks(tkr)
+    mkt = 'stock'
+    sec_id = @sec_master.tkr_lookup(mkt, tkr)
+    puts "@sid_map[#{sec_id}.to_i] = #{tkr}"
+    @sid_map[sec_id.to_i] = tkr
+    @tkr_map[tkr] = sec_id.to_i
+    @contracts[tkr] ||= get_contract( mkt, sec_id )
+    contract = @contracts[tkr]
+    debug "subscribe_ticks: contract: #{contract.inspect}"
+
+    tkr_id = get_ticker_id( mkt, sec_id ) rescue return
+    init_lvc(tkr)
+    req_ticks(tkr_id, contract)
+  end
+
+  def print_orders
+    @orders.keys.sort.each { |t| puts "#{t}  #{@orders[t]}" }
+  end
+
+  def print_lvc
+    #puts @lvc.keys
+    print_tick_hdr
+    @lvc.keys.sort.each { |tid| print_tick(tid) }
+  end
+
+  def print_account
+    #puts @account
+    printf "Account .................. %s\n",@account["AccountCode"]
+    printf "AccountType .............. %s\n",@account["AccountType"]
+    printf "AvailableFunds ........... %s\n",@account["AvailableFunds"]
+    printf "BuyingPower .............. %s\n",@account["BuyingPower"]
+    printf "CashBalance .............. %s\n",@account["CashBalance"]
+    printf "Cushion .................. %s\n",@account["Cushion"]
+    printf "EquityWithLoanValue ...... %s\n",@account["EquityWithLoanValue"]
+    printf "ExcessLiquidity .......... %s\n",@account["ExcessLiquidity"]
+    printf "FullAvailableFunds ....... %s\n",@account["FullAvailableFunds"]
+    printf "FullExcessLiquidity ...... %s\n",@account["FullExcessLiquidity"]
+    printf "GrossPositionValue ....... %s\n",@account["GrossPositionValue"]
+    printf "LookAheadAvailableFunds .. %s\n",@account["LookAheadAvailableFunds"]
+    printf "NetLiquidation ........... %s\n",@account["NetLiquidation"]
+    printf "OptionMarketValue ........ %s\n",@account["OptionMarketValue"]
+    printf "ZZZ ...................... %s\n",@account["EquityWithLoanValue"]
+  end
+
+  def print_size_options
+    printf "%-6s",""
+    # $50 risk
+    printf "%9s%8s%8s","","$50 risk",""
+    printf "  | "
+    # $100 risk
+    printf "%8s%9s%8s","","$100 risk",""
+    printf "\n"
+    printf "%-6s",""
+    printf " %4s %4s %4s %4s %4s","0.3x","1.0x","1.5x","2.0x","2.7x"
+    printf "  | "
+    printf " %4s %4s %4s %4s %4s","0.3x","1.0x","1.5x","2.0x","2.7x"
+    printf "\n"
+    risk1 = 50
+    risk2 = 100
+    @lvc.keys.sort.each { |tid| 
+      printf "%-6s",sid_map[tid]
+      printf " %4d %4d %4d %4d %4d",
+            risk1/(@lvc[tid][:atr14]*0.3),
+            risk1/(@lvc[tid][:atr14]*1.0),
+            risk1/(@lvc[tid][:atr14]*1.5),
+            risk1/(@lvc[tid][:atr14]*2.0),
+            risk1/(@lvc[tid][:atr14]*2.7)
+      printf "  | "
+      printf " %4d %4d %4d %4d %4d",
+            risk2/(@lvc[tid][:atr14]*0.3),
+            risk2/(@lvc[tid][:atr14]*1.0),
+            risk2/(@lvc[tid][:atr14]*1.5),
+            risk2/(@lvc[tid][:atr14]*2.0),
+            risk2/(@lvc[tid][:atr14]*2.7)
+      printf "\n"
+    }
+  end
+
+  def print_atr_stop_loss
+    printf "%-6s",""
+    printf "%-6s","Last"
+    printf " %8s %8s %8s %8s %8s","0.3x","1.0x","1.5x","2.0x","2.7x"
+    printf "  | "
+    printf " %4s %4s %4s %4s %4s","0.3x","1.0x","1.5x","2.0x","2.7x"
+    printf "\n"
+    risk1 = 50
+    risk2 = 100
+    #@lvc.keys.sort.each { |tid|
+      #px = @lvc[tid][:last_price]
+      #printf "%-6s",sid_map[tid]
+    tkr_map.keys.sort.each { |tkr|
+      tid = tkr_map[tkr]
+      px = @lvc[tid][:last_price]
+      printf "%-6s",tkr
+      printf "%-6.2f",px
+      printf " %8.2f %8.2f %8.2f %8.2f %8.2f",
+            px - (@lvc[tid][:atr14]*0.3),
+            px - (@lvc[tid][:atr14]*1.0),
+            px - (@lvc[tid][:atr14]*1.5),
+            px - (@lvc[tid][:atr14]*2.0),
+            px - (@lvc[tid][:atr14]*2.7)
+      printf "  | "
+      printf " %4.1f %4.1f %4.1f %4.1f %4.1f",
+            (@lvc[tid][:atr14]*0.3),
+            (@lvc[tid][:atr14]*1.0),
+            (@lvc[tid][:atr14]*1.5),
+            (@lvc[tid][:atr14]*2.0),
+            (@lvc[tid][:atr14]*2.7)
+      printf "\n"
+    }
+  end
+
+
+  def print_portf
+    total_value_long  = 0
+    total_value_short = 0
+    total_realized    = 0
+    total_unrealized  = 0
+    printf "%6s %6s %6s %8s %6s %8s %8s %6s\n","Tkr","Qty","Last","Value","AvgPx","UnReal","Real","Acct"
+    @portf.keys.sort.each do |tkr|
+      printf "%6s %6.0f %6.2f %8.2f %6.2f %8.2f %8.2f %s\n",
+             tkr,
+             @portf[tkr][:position],
+             @portf[tkr][:market_price],
+             @portf[tkr][:market_value],
+             @portf[tkr][:average_price],
+             @portf[tkr][:unrealized_pnl],
+             @portf[tkr][:realized_pnl],
+             @portf[tkr][:broker_account]
+      total_value_long += @portf[tkr][:market_value] if @portf[tkr][:position] > 0
+      total_value_short -= @portf[tkr][:market_value] if @portf[tkr][:position] < 0
+      total_realized += @portf[tkr][:realized_pnl]
+      total_unrealized += @portf[tkr][:unrealized_pnl]
+    end
+    printf "Total value long:     %10s\n", ActionView::Base.new.number_to_currency(total_value_long)
+    printf "Total value short:    %10s\n", ActionView::Base.new.number_to_currency(total_value_short)
+    printf "Total UnRealized PnL: %10s\n", ActionView::Base.new.number_to_currency(total_unrealized)
+    printf "Total Realized PnL:   %10s\n", ActionView::Base.new.number_to_currency(total_realized)
+  end
+
+  def print_tick_hdr
+    printf "%-6s%6s/%-3s %6s/%-3s %6s/%-3s   %6s/%-3s  %6s/%-3s  %6s/%-3s %4s %10s %s\n",
+           "tkr","bid","sz","ask","sz","last","sz","high","sz","low","sz", "last", "sz", "ATR","Volume", "timestamp"
+  end
+
+  def print_tick(tid)
+    rg = (@lvc[tid][:last_price]>@lvc[tid][:prev_close])?"G":"R"
+    puts "rg = #{rg}"
+    #printf "%-6s%6.2f/%-3d %6.2f/%-3d %6.2f/%-3d   %6.2f/%-3d  %6.2f/%-3d  %6.2f/%-3d %4.2f %1s %8s %s \n",
+    printf "%-6s%6.2f/%-3d %6.2f/%-3d %6.2f/%-3d   %6.2f/%-3d  %6.2f/%-3d  %6.2f/%-3d %4.2f %10s %s \n",
+            sid_map[tid],
+            @lvc[tid][:bid_price],@lvc[tid][:bid_size],
+            @lvc[tid][:ask_price],@lvc[tid][:ask_size],
+            @lvc[tid][:last_price],@lvc[tid][:last_size],
+            @lvc[tid][:high_price],@lvc[tid][:high_size],
+            @lvc[tid][:low_price],@lvc[tid][:low_size],
+            @lvc[tid][:last_price], @lvc[tid][:last_size],
+            @lvc[tid][:atr14],
+            ActionView::Base.new.number_with_delimiter(@lvc[tid][:volume]),
+            Time.at(@lvc[tid][:last_timestamp].to_i).strftime("%T")
+  end
+
+  def start_ewrapper
+    Fiber.new {
+      @ew = EWrapper.new(@ib,self,@this_broker)
+      @ew.run
+    }.resume
+  end
+
+  def query_account_data(params=nil)
+    show_action "ib.send_message :RequestAccountData"
+    ib.send_message :RequestAccountData
+    #ib.wait_for :AccountDownloadEnd
+  end
+
+  ###########
+  private
+  ###########
+
+#DBUG:2016-05-13 09:52:27.844  place_order: <Order: @attributes={"quantity"=>105, "limit_price"=>11.18, "side"=>"S", "order_type"=>"LMT", "algo_strategy"=>"", "transmit"=>true, "created_at"=>2016-05-13 09:52:27 -0400, "updated_at"=>2016-05-13 09:52:27 -0400, "aux_price"=>0.0, "discretionary_amount"=>0.0, "parent_id"=>0, "tif"=>"DAY", "open_close"=>1, "origin"=>0, "short_sale_slot"=>0, "trigger_method"=>0, "oca_type"=>0, "auction_strategy"=>0, "designated_location"=>"", "exempt_code"=>-1, "display_size"=>0, "continuous_update"=>0, "delta_neutral_con_id"=>0, "what_if"=>false, "leg_prices"=>[], "algo_params"=>{}, "combo_params"=>{}}, @order_states=[#<IB::OrderState:0x00000102124fc8 @attributes={"status"=>"New", "filled"=>0, "remaining"=>0, "price"=>0, "average_price"=>0, "created_at"=>2016-05-13 09:52:27 -0400, "updated_at"=>2016-05-13 09:52:27 -0400}>] >
+
+#DBUG:2016-05-13 09:52:27.844  place_order: <Contract:  @attributes={"symbol"=>"FCX", "currency"=>"USD", "sec_type"=>"STK", "exchange"=>"SMART", "created_at"=>2016-05-13 09:51:56 -0400, "updated_at"=>2016-05-13 09:51:56 -0400, "con_id"=>0, "right"=>"", "include_expired"=>false}, @description=Freeport-Mcmoran Copper & Gold >
+
+  def place_order(order)
+    # order[:tkr] => tkr
+    # order[:entry_order] => {
+    #         :id          => buy_order.local_id,
+    #         :action      => "BUY",
+    #         :order_qty   => size,
+    #         :order_type  => "LMT",
+    #         :descr       => setup,
+    #         :status      => "staged",
+    #         :filled    => 0}
+ 
+    tkr = order[:tkr]
+    entry_order = order[:entry_order]
+
+    ib_order = 
+    contract =
+    ib_order_id = @ib.place_order ib_order, contract
+  end
+
+  def place_order_old(ib_order, contract)
+    #$stderr.puts "place_order(#{ib_order}, #{contract})"
+    #@fh_submissions.write "place_order: ib_order=#{ib_order}\n"
+    #@fh_submissions.write "place_order: contract=#{contract}\n"
+    @ib.wait_for :NextValidId
+    o_attr = ib_order.attributes
+    c_attr = contract.attributes
+    ib_order_id = @ib.place_order ib_order, contract
+
+    show_info "Order Placed (IB order number = #{ib_order_id})"
+    #ib.send_message :RequestAllOpenOrders
+
+    order_states = ib_order.order_states
+    #@fh_submissions.write "order_states = #{order_states}\n"
+
+    #@fh_submissions.write "contract.attributes = #{contract.attributes}\n"
+    #@fh_submissions.write "o_attr = #{o_attr}\n"
+
+    @fh_submissions.write "#{ib_order.local_id},"
+    @fh_submissions.write "#{c_attr['symbol']},"
+    @fh_submissions.write "#{o_attr['quantity']},"
+    @fh_submissions.write "#{o_attr['limit_price']},"
+    @fh_submissions.write "#{o_attr['aux_price']},"
+    @fh_submissions.write "#{o_attr['side']},"
+    @fh_submissions.write "#{o_attr['order_type']},"
+    @fh_submissions.write "#{o_attr['parent_id']},"
+    @fh_submissions.write "#{o_attr['transmit']},"
+    @fh_submissions.write "#{o_attr['created_at']},"
+    @fh_submissions.write "#{o_attr['updated_at']},"
+    @fh_submissions.write "#{o_attr['discretionary_amount']},"
+    @fh_submissions.write "#{o_attr['tif']},"
+    @fh_submissions.write "#{o_attr['open_close']},"
+    @fh_submissions.write "#{o_attr['origin']},"
+    @fh_submissions.write "#{o_attr['short_sale_slot']},"
+    @fh_submissions.write "#{o_attr['trigger_method']},"
+    @fh_submissions.write "#{o_attr['oca_type']},"
+    @fh_submissions.write "#{o_attr['auction_strategy']},"
+    @fh_submissions.write "#{o_attr['designated_location']},"
+    @fh_submissions.write "#{o_attr['exempt_code']},"
+    @fh_submissions.write "#{o_attr['display_size']},"
+    @fh_submissions.write "#{o_attr['continuous_update']},"
+    @fh_submissions.write "#{o_attr['delta_neutral_con_id']},"
+    @fh_submissions.write "#{o_attr['algo_strategy']},"
+    @fh_submissions.write "#{o_attr['what_if']},"
+    @fh_submissions.write "#{o_attr['leg_prices']},"
+    @fh_submissions.write "#{o_attr['algo_params']},"
+    @fh_submissions.write "#{o_attr['combo_params']}\n"
+
+  end
+
+  def get_ticker_id(mkt, sec_id)
+    @sec_master.encode_ticker(mkt, sec_id)
+  end
+
+  def get_contract( mkt, sec_id )
+    show_info "get_contract( #{mkt}, #{sec_id} )"
+    tkr_id = get_ticker_id(mkt, sec_id)
+    #if @contracts.member?(tkr_id) then
+    #  return @contracts[tkr_id]
+    #else
+      show_info "data = @sec_master.send(#{mkt}_indics,#{sec_id})"
+      data = @sec_master.send("#{mkt}_indics",sec_id)
+      #debug "mkt=#{mkt}"
+      sec_exchange = 'SMART'
+      sec_exchange = data['exchange'] if (mkt == :index)
+      #show_info "@contracts[tkr_id] = IB::Contract.new(:symbol => #{data['ib_tkr']},"
+      #show_info "                                     :currency => USD,"
+      ##show_info "                                     :sec_type => 'STK',"
+      #show_info "                                     :sec_type => :stock,"
+      #show_info "                                     :exchange => #{sec_exchange},"
+      #show_info "                                     :description => #{data['desc']})"
+      @contracts[tkr_id] = IB::Contract.new(:symbol => data['ib_tkr'],
+                                           :currency => "USD",
+                                           #:sec_type => 'STK',  #mkt,
+                                           :sec_type => :stock,  #mkt,
+                                           :exchange => sec_exchange,
+                                           :description => data['desc'])
+    #end
+  end
+
+  def req_ticks(ticker_id,contract)
+    #msg = IB::OutgoingMessages::RequestMarketData.new({
+    #                                                  :ticker_id => id,
+    #                                                  :contract => contract
+    #                                                })
+    #ib.dispatch(msg)
+    @ib.send_message IB::Messages::Outgoing::RequestMarketData.new(
+                        :request_id => ticker_id,
+                        :contract => contract)
+  end
+
+  def req_md(ticker_id, contract)
+    debug "req_md(#{ticker_id}, #{contract.inspect})"
+    show_info "req_md:Market Data Request: ticker_id=#{ticker_id} on #{@mkt_data_server_id}"
+
+#    unless @mkt_subs.is_active?(ticker_id)
+    @mkt_subs.activate(ticker_id,@mkt_data_server_id)
+    show_action "@ib.send_message :RequestRealTimeBars, :ticker_id => #{ticker_id}, contract => #{contract}"
+    @local_subs[ticker_id] = :on
+    #@ib.send_message :RequestRealTimeBars, :ticker_id => ticker_id, :contract => contract, \
+    #                 :data_type => "TRADES", :bar_size => "5 secs"
+    @ib.send_message IB::Messages::Outgoing::RequestRealTimeBars.new(
+                        :request_id => ticker_id,
+                        :contract => contract,
+                        :data_type => :trades,
+                        :bar_size => 5, # Only 5 secs bars available?
+                        :use_rth => true)
+      #  data = { :id => ticker_id (int),
+      #           :contract => Contract ,
+      #           :bar_size => int/Symbol? Currently only 5 second bars are supported,
+      #                        if any other value is used, an exception will be thrown.,
+      #           :data_type => Symbol: Determines the nature of data being extracted.
+      #                       :trades, :midpoint, :bid, :ask, :bid_ask,
+      #                       :historical_volatility, :option_implied_volatility,
+      #                       :option_volume, :option_open_interest
+      #                       - converts to "TRADES," "MIDPOINT," "BID," etc...
+      #          :use_rth => int: 0 - all data available during the time span requested
+      #                     is returned, even data bars covering time intervals where the
+      #                     market in question was illiquid. 1 - only data within the
+      #                     "Regular Trading Hours" of the product in question is returned,
+      #                     even if the time span requested falls partially or completely
+      #                     outside of them.
+
+      # ib.send_message IB::Messages::Outgoing::RequestRealTimeBars.new(
+      #                  :request_id => request_id,
+      #                  :contract => contract,
+      #                  :bar_size => 5, # Only 5 secs bars available?
+      #                  :data_type => :trades,
+      #                  :use_rth => true)
+
+#    end
+  end
+
+  def unreq_md(ticker_id)
+    #tkr_plant = redis.hget("md:status:#{ticker_id}", "ticker_plant")
+    if ticker_id == "all" then
+      @local_subs.keys.each { |id| debug "@ib.send_message :CancelRealTimeBars, :id => #{id}" }
+      @local_subs.keys.each { |id| @ib.send_message :CancelRealTimeBars, :id => id
+                              @local_subs.delete(id) }
+    else
+      tkr_plant = @mkt_subs.ticker_plant(ticker_id)
+      debug "unreq_md(#{ticker_id}) mkt_data_server_id=#{@mkt_data_server_id}   tkr_plant=#{tkr_plant}"
+      if (@mkt_data_server_id == tkr_plant) then
+        debug "unreq_md(#{ticker_id})"
+        show_info "unreq_md:Market Data UnRequest: ticker_id=#{ticker_id} on #{@mkt_data_server_id}"
+
+        begin
+          debug "@ib.send_message :CancelRealTimeBars, :id => #{ticker_id}"
+          @ib.send_message :CancelRealTimeBars, :id => ticker_id
+
+          debug "@local_subs.delete(#{ticker_id})"
+          @local_subs.delete(ticker_id)
+          #@mkt_subs.unsubscribe(ticker_id, "bar5s")
+        rescue => e
+          warn "Problem with CancelRealTimeBars"
+          warn e.message
+        end
+      else
+        $stderr.puts "Could not Cancel MktData for #{ticker_id}/#{tkr_plant} on #{@mkt_data_server_id}"
+      end
+    end
+  end
+
+end

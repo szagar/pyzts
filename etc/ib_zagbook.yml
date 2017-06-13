@@ -1,0 +1,80 @@
+defaults: &defaults 
+  client_id:    0
+  md_client_id: 1
+  md_status:    off
+  md_id:        tkr_plant_0
+
+################################
+#  IB Production Account configs
+################################
+smz_prod: 
+  <<: *defaults
+  user_name:   szagar725
+  broker_code: U1049030
+  host:        localhost   #zac1.local     #macdaddy.local
+  gw_port:     4021
+  tws_port:    4011
+  client_id:   0
+  md_status:   on
+  md_id:       tkr_plant_1
+
+tlz_prod: 
+  <<: *defaults
+  user_name:   zagar499
+  broker_code: U934032
+  host:        appserver12.local
+  gw_port:     4022
+  tws_port:    4012
+  client_id:   1
+  md_status:   on
+  md_id:       tkr_plant_2
+
+############################
+#   IB Paper Account configs
+############################
+smz_paper: 
+  <<: *defaults
+  user_name:   simsim321
+  broker_code: DU139750
+  host:        localhost     #appserver11.local
+  gw_port:     4023
+  tws_port:    4013
+  client_id:   0
+  md_status:   off
+  md_id:       tkr_plant_3
+
+tlz_paper: 
+  <<: *defaults
+  user_name:  tagar398
+  broker_code: DU95153
+  host:        localhost  #zac1.local    #appserver11.local
+  gw_port:     4024
+  tws_port:    4014
+  client_id:   0
+  md_status:   off
+  md_id:       tkr_plant_4
+
+edemo: 
+  <<: *defaults
+  broker_code: Demo
+  host:        localhost
+  gw_port:     ????
+  tws_port:    7496
+  client_id:   0
+  md_status:   off
+  md_id:       tkr_plant_5
+
+############################
+#  IB development Account 
+############################
+dev_account:
+  <<: *defaults
+  user_name:   tagar398
+  broker_code: DU95153
+  host:        appserver11.local
+  gw_port:     4024
+  tws_port:    4014
+  client_id:   0
+  md_status:   off
+  md_id:       tkr_plant_6
+

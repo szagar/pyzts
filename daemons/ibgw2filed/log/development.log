@@ -1,0 +1,53 @@
+# Logfile created on 2017-06-13 17:24:27 -0400 by logger.rb/44203
+2017-06-13 17:24:27.682534 ibgwd(908) [INFO] [daemon-kit]: DaemonKit (0.3.1) booting in development mode
+2017-06-13 17:24:27.682641 ibgwd(908) [INFO] [daemon-kit]: Setting up trap for USR1
+2017-06-13 17:24:27.682707 ibgwd(908) [INFO] [daemon-kit]: Setting up trap for USR2
+2017-06-13 17:24:27.682777 ibgwd(908) [INFO] [daemon-kit]: Setting up trap for HUP
+2017-06-13 17:24:27.682844 ibgwd(908) [INFO] [daemon-kit]: Setting up trap for INT
+2017-06-13 17:24:27.682896 ibgwd(908) [INFO] [daemon-kit]: Setting up trap for TERM
+2017-06-13 17:24:27.683012 ibgwd(908) [INFO] [daemon-kit]: Configuring safely for exception handling
+2017-06-13 17:24:27.685015 ibgwd(908) [INFO] [daemon-kit]: DaemonKit (0.3.1) booted, now running ibgwd
+2017-06-13 17:24:27.705414 ibgwd(908) [INFO] [daemon-kit]: Running shutdown hooks
+2017-06-13 17:24:27.705487 ibgwd(908) [WARN] [daemon-kit]: Shutting down ibgwd
+2017-06-13 17:35:01.519566 ibgwd(1444) [INFO] [daemon-kit]: DaemonKit (0.3.1) booting in development mode
+2017-06-13 17:35:01.519696 ibgwd(1444) [INFO] [daemon-kit]: Setting up trap for USR1
+2017-06-13 17:35:01.519764 ibgwd(1444) [INFO] [daemon-kit]: Setting up trap for USR2
+2017-06-13 17:35:01.519839 ibgwd(1444) [INFO] [daemon-kit]: Setting up trap for HUP
+2017-06-13 17:35:01.519907 ibgwd(1444) [INFO] [daemon-kit]: Setting up trap for INT
+2017-06-13 17:35:01.519960 ibgwd(1444) [INFO] [daemon-kit]: Setting up trap for TERM
+2017-06-13 17:35:01.520069 ibgwd(1444) [INFO] [daemon-kit]: Configuring safely for exception handling
+2017-06-13 17:35:01.520857 ibgwd(1444) [INFO] [daemon-kit]: DaemonKit (0.3.1) booted, now running ibgwd
+2017-06-13 17:35:05.179349 ibgwd(1444) [INFO] ibgwd-daemon.rb:28: Config ...
+2017-06-13 17:36:53.768037 ibgwd(1589) [INFO] [daemon-kit]: DaemonKit (0.3.1) booting in development mode
+2017-06-13 17:36:53.768165 ibgwd(1589) [INFO] [daemon-kit]: Setting up trap for USR1
+2017-06-13 17:36:53.768265 ibgwd(1589) [INFO] [daemon-kit]: Setting up trap for USR2
+2017-06-13 17:36:53.768383 ibgwd(1589) [INFO] [daemon-kit]: Setting up trap for HUP
+2017-06-13 17:36:53.768507 ibgwd(1589) [INFO] [daemon-kit]: Setting up trap for INT
+2017-06-13 17:36:53.768581 ibgwd(1589) [INFO] [daemon-kit]: Setting up trap for TERM
+2017-06-13 17:36:53.768734 ibgwd(1589) [INFO] [daemon-kit]: Configuring safely for exception handling
+2017-06-13 17:36:53.769522 ibgwd(1589) [INFO] [daemon-kit]: DaemonKit (0.3.1) booted, now running ibgwd
+2017-06-13 17:36:56.273213 ibgwd(1589) [INFO] ibgwd-daemon.rb:28: Config ...
+2017-06-13 17:38:00.92104 ibgwd(1589) [INFO] [daemon-kit]: Running shutdown hooks
+2017-06-13 17:38:00.92301 ibgwd(1589) [WARN] [daemon-kit]: Shutting down ibgwd
+2017-06-13 17:38:31.572868 ibgwd(1664) [INFO] [daemon-kit]: DaemonKit (0.3.1) booting in development mode
+2017-06-13 17:38:31.572996 ibgwd(1664) [INFO] [daemon-kit]: Setting up trap for USR1
+2017-06-13 17:38:31.573066 ibgwd(1664) [INFO] [daemon-kit]: Setting up trap for USR2
+2017-06-13 17:38:31.573136 ibgwd(1664) [INFO] [daemon-kit]: Setting up trap for HUP
+2017-06-13 17:38:31.573203 ibgwd(1664) [INFO] [daemon-kit]: Setting up trap for INT
+2017-06-13 17:38:31.573258 ibgwd(1664) [INFO] [daemon-kit]: Setting up trap for TERM
+2017-06-13 17:38:31.573372 ibgwd(1664) [INFO] [daemon-kit]: Configuring safely for exception handling
+2017-06-13 17:38:31.574152 ibgwd(1664) [INFO] [daemon-kit]: DaemonKit (0.3.1) booted, now running ibgwd
+2017-06-13 17:38:33.523926 ibgwd(1664) [INFO] ibgwd-daemon.rb:28: Config ...
+2017-06-13 17:38:55.929405 ibgwd(1664) [INFO] [daemon-kit]: Running shutdown hooks
+2017-06-13 17:38:55.929611 ibgwd(1664) [WARN] [daemon-kit]: Shutting down ibgwd
+2017-06-13 17:39:05.645494 ibgwd(1712) [INFO] [daemon-kit]: DaemonKit (0.3.1) booting in development mode
+2017-06-13 17:39:05.645624 ibgwd(1712) [INFO] [daemon-kit]: Setting up trap for USR1
+2017-06-13 17:39:05.645690 ibgwd(1712) [INFO] [daemon-kit]: Setting up trap for USR2
+2017-06-13 17:39:05.645760 ibgwd(1712) [INFO] [daemon-kit]: Setting up trap for HUP
+2017-06-13 17:39:05.645827 ibgwd(1712) [INFO] [daemon-kit]: Setting up trap for INT
+2017-06-13 17:39:05.645894 ibgwd(1712) [INFO] [daemon-kit]: Setting up trap for TERM
+2017-06-13 17:39:05.646006 ibgwd(1712) [INFO] [daemon-kit]: Configuring safely for exception handling
+2017-06-13 17:39:05.646782 ibgwd(1712) [INFO] [daemon-kit]: DaemonKit (0.3.1) booted, now running ibgwd
+2017-06-13 17:39:06.604014 ibgwd(1712) [INFO] ibgwd-daemon.rb:28: Config ...
+2017-06-13 17:39:25.823077 ibgwd(1712) [INFO] [daemon-kit]: Running shutdown hooks
+2017-06-13 17:39:25.823190 ibgwd(1712) [WARN] [daemon-kit]: Shutting down ibgwd

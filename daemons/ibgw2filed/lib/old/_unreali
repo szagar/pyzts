@@ -1,0 +1,354 @@
+$: << "#{ENV['ZTS_HOME']}/etc"
+
+require 'date'
+require 'position_store'
+require 'order_store'
+require "zts_config"
+require 'launchd_helper'
+require 'position_struct'
+require 'order_proxy'
+require 'log_helper'
+
+class  PositionProxy
+  include LaunchdHelper
+  include LogHelper
+  
+  attr_reader :pos_id
+
+  def initialize(params, persister=PositionStore.instance,
+                         order_store=OrderStore.new)
+    @store = persister
+    @order_store = order_store
+    @pos_id    = params.fetch(:pos_id) {create_position(params)}
+  end
+  
+  def self.exists?(pos_id)
+    PositionStore.instance.exists?(pos_id)
+  end
+
+  def is_open?(pos_id)
+    @store.getter(pos_id,"status") == "open"
+  end
+
+  def create_position(params)
+    show_action "create_position: #{params[:account_name]}/#{params[:broker]} #{params[:ticker]}(#{params[:sec_id]}) pos risk:#{params[:init_risk_position]} risk share:#{params[:init_risk_share]} size:#{params[:mm_size]}"
+    set_position_defaults(params)
+    @store.create(params)
+  end
+
+  def valid?
+    (ticker && ticker.size > 0)
+  end
+
+  def info
+    persister_name
+  end
+
+  def set_status(new_status)
+    old_status = status
+    self.status = new_status
+    old_status
+  end
+
+  def current_stop
+    #puts "Float(@store.getter(#{@pos_id}, \"current_stop\")) rescue nil"
+    Float(@store.getter(@pos_id, "current_stop")) rescue nil
+  end
+
+  def next_stop_trigger
+    Float(@store.getter(@pos_id, "next_stop_trigger")) rescue nil
+  end
+
+  def method_missing(methId, *args, &block)
+    #puts "PositionProxy#method_missing(#{methId}, #{args}) #{methId.class}"
+    case methId.id2name
+    when /=/
+      #self.class.send(:define_method, methId) do
+      #  @store.setter(@pos_id,methId.id2name.chomp("="),args)
+      #end
+      #puts "@store.setter(#{@pos_id},#{methId.id2name.chomp("=")},#{args})"
+      @store.setter(@pos_id,methId.id2name.chomp("="),args)
+    when 'current_risk', 'init_risk', 'setup_support', 'commissions',
+         'avg_entry_px', 'quantity', 'position_qty', 'support',
+         'mm_entry_px', 'realized', 'unrealized', 'initial_stop_loss',
+         'mark_px', 'avg_exit_px', 'escrow', 'init_risk_position', 'entry_stop_price'
+      self.class.send(:define_method, methId) do
+        Float(@store.getter(@pos_id, methId.id2name)).round(2) rescue nil
+      end
+      #puts "PositionProxy#method_missing: @store.getter(#{@pos_id}, #{methId.id2name}).to_f"
+      @store.getter(@pos_id, methId.id2name).to_f
+    when 'side_multiplier', 'setup_id', 'sec_id', 'mm_size', "order_qty"
+      self.class.send(:define_method, methId) do
+        @store.getter(@pos_id, methId.id2name).to_i
+      end
+      @store.getter(@pos_id, methId.id2name).to_i
+    when 'entry_name', 'broker', 'account_name', 'status', 'side',
+         'setup_src', 'adjust_stop_trigger', 'ticker', 'mkt',
+         'trailing_stop_type', "trade_date", "trade_type"
+      self.class.send(:define_method, methId) do
+        @store.getter(@pos_id, methId.id2name)
+      end
+      @store.getter(@pos_id, methId.id2name)
+    else
+      super
+    end
+  end
+
+  def update_support_level(level)
+    current_support = support
+    if(side == "long"  && level > (support||0)) ||
+      (side == "short" && level < (support||9999))
+      self.support = level 
+    end
+    show_action "PositionProxy#update_support_level(#{pos_id}): #{current_support} ==> #{support}"
+  end
+
+  def update_stop_price(price=nil)
+    old_stop = current_stop
+    new_stop, new_stop_trigger = calc_stop_price(price) 
+    unless (old_stop.is_a?(Numeric) && old_stop > 0.0)
+      self.current_stop = old_stop = ((side == "long") ? 0 : 99_999)
+      self.initial_stop_loss = current_stop
+    end
+    delta = (new_stop.to_f - old_stop.to_f) * side_multiplier
+    changed = false
+    if (delta >= 0.05)
+      #puts "self.current_stop = #{new_stop}"
+      self.current_stop = new_stop
+      self.next_stop_trigger = new_stop_trigger
+      changed = true
+    end
+    show_action "PositionProxy#update_stop_price(#{pos_id}): #{old_stop} ==> #{current_stop}"
+    changed
+  end
+
+  def buy(qty, price)
+    show_action "PositionProxy#buy(#{pos_id}): #{qty} @ #{price}"
+    warn "Position(#{@pos_id})Buying quantity, WTF" unless qty > 0
+    return [quantity, 0] unless qty > 0
+    price = price.to_f
+    over_fill    = 0
+    new_flag     = true if (quantity == 0)
+    old_quantity = quantity
+    self.quantity = old_quantity + qty
+    #self.mark_px = price
+    case self.side
+    when 'long'
+      set_status('open')
+      self.position_qty += qty
+      self.avg_entry_px  = ((old_quantity.abs * avg_entry_px + qty.abs * price) / quantity.abs).round(3)
+      released_escrow    = qty * price
+      self.escrow       -= released_escrow
+    when 'short'
+      set_status('unwind')
+      if quantity        >= 0 then
+        #close_position
+        over_fill        = quantity.abs
+        quantity = 0
+      end
+      released_escrow  = 0
+      self.realized    = (realized + qty.to_f * (avg_entry_px - price)).round(3)
+     #self.realized    = (realized + qty.to_f * (price - avg_entry_px)).round(3)
+      #self.unrealized  = (quantity.abs * (avg_entry_px - price)).round(3)
+      update_unrealized(price)
+      self.avg_exit_px = ((avg_exit_px * (position_qty.abs - old_quantity.abs)   \
+                          + price * qty)                               \
+                         / (position_qty.abs - old_quantity.abs + qty)).round(3)
+    else
+      raise "Position#buy:: side(#{side}) Not understood"
+    end
+
+    self.trade_date = Date.today.strftime('%Y%m%d') if new_flag
+
+    show_info "PositionProxy#buy(#{pos_id}): status      : #{status}"
+    show_info "PositionProxy#buy(#{pos_id}): quantity    : #{quantity}"
+    show_info "PositionProxy#buy(#{pos_id}): position_qty: #{position_qty}"
+    show_info "PositionProxy#buy(#{pos_id}): avg_entry_px: #{avg_entry_px}"
+    show_info "PositionProxy#buy(#{pos_id}): escrow      : #{escrow}"
+    show_info "PositionProxy#buy(#{pos_id}): realized    : #{realized}"
+    show_info "PositionProxy#buy(#{pos_id}): unrealized  : #{unrealized}"
+    show_info "PositionProxy#buy(#{pos_id}): trade_date  : #{trade_date}"
+    show_info "PositionProxy#buy(#{pos_id}): avg_exit_px: #{avg_exit_px}"
+    
+    [quantity, released_escrow]
+  end
+  
+  def sell(qty, price)
+    show_action "PositionProxy#sell(#{pos_id}): #{qty} @ #{price}"
+    warn "Position(#{@pos_id})Selling quantity, WTF" unless qty > 0
+    return [quantity, 0] unless qty > 0
+    old_quantity = quantity.to_f
+    price = price.to_f
+    over_fill = 0
+    new_flag = true if (quantity == 0)
+    self.quantity = quantity - qty
+    #self.mark_px = price
+    if(side == 'short') then
+      set_status('open')
+      self.position_qty = position_qty - qty
+      self.avg_entry_px = ((old_quantity.abs * avg_entry_px +
+                           qty.abs * price) / quantity.abs).round(3)
+    elsif(side == 'long') then
+      set_status('unwind')
+      if(quantity <= 0) then
+        #close_position
+        over_fill = quantity.abs
+        quantity = 0
+      end
+      self.realized    = (realized + qty.to_f * (price - avg_entry_px)).round(3)
+      #self.unrealized  = (quantity * (price - avg_entry_px)).round(3)
+      update_unrealized(price)
+      self.avg_exit_px = ((avg_exit_px *
+                             (position_qty - old_quantity) + price * qty) / 
+                          (position_qty - old_quantity + qty)).round(3)
+    else
+      raise "Position#sell:: side(#{side}) Not understood"
+    end
+
+    self.trade_date = Date.today.strftime('%Y%m%d') if new_flag
+
+    show_info "PositionProxy#sell(#{pos_id}): status      : #{status}"
+    show_info "PositionProxy#sell(#{pos_id}): quantity    : #{quantity}"
+    show_info "PositionProxy#sell(#{pos_id}): position_qty: #{position_qty}"
+    show_info "PositionProxy#sell(#{pos_id}): avg_entry_px: #{avg_entry_px}"
+    show_info "PositionProxy#sell(#{pos_id}): escrow      : #{escrow}"
+    show_info "PositionProxy#sell(#{pos_id}): realized    : #{realized}"
+    show_info "PositionProxy#sell(#{pos_id}): unrealized  : #{unrealized}"
+    show_info "PositionProxy#sell(#{pos_id}): trade_date  : #{trade_date}"
+    show_info "PositionProxy#sell(#{pos_id}): avg_exit_px: #{avg_exit_px}"
+
+    [quantity, over_fill]
+  end
+  
+  def order_filled
+    set_status('filled')
+    rtn = [escrow,0].max
+    show_action "PositionProxy#order_filled(pos_id: #{pos_id}): status ==> #{status}, remaining escrow ==> #{escrow}"
+    escrow = 0
+    rtn
+  end
+
+  def release_escrow
+    show_action "release_escrow, escrow=#{escrow}"
+    rtn = [escrow,0].max
+    self.escrow = 0
+    rtn
+  end
+
+  def close_position
+    show_action "close_position"
+    set_status('closed')
+    self.closed_date = Date.today.strftime('%Y%m%d')
+    remove_position_alerts(pos_id)
+  end
+  
+  def stop_action
+    (side == 'long') ? :sell : :buy
+  end
+  
+  def unwind_order
+   OrderProxy.new( {pos_id:       @pos_id,
+                    sec_id:       sec_id,
+                    ticker:       ticker,
+                    mkt:          mkt,
+                    action:       stop_action,
+                    action2:      :to_close,
+                    order_qty:    quantity.abs,
+                    leaves:       quantity.abs,
+                    filled_qty:   0.0,
+                    price_type:   'MKT',
+                    limit_price:  0,
+                    broker:       broker}, @order_store )
+  end
+
+  def to_human
+    "pos(#{pos_id}) #{quantity} #{ticker}(#{sec_id}) to #{broker} #{status}"
+  end
+
+  def db_parms
+    {pos_id: @pos_id, setup_id: setup_id, sec_id: sec_id, side: side, 
+      init_risk: init_risk, current_risk: current_risk, 
+      avg_entry_px: avg_entry_px, quantity: quantity, position_qty: position_qty,
+      setup_support: setup_support,  support: support,
+      status: status, current_stop: current_stop, initial_stop_loss: initial_stop_loss,
+      setup_src: setup_src, entry_name: entry_name,
+      account_name: account_name, broker: broker,
+      order_qty: order_qty,
+      mm_size: mm_size, mm_entry_px: mm_entry_px,
+      realized: realized, unrealized: unrealized}
+  end
+  
+  def add_commissions(amount)
+    @store.add_commissions(@pos_id, amount)
+  end
+
+  def mark(price)
+    @store.setter(@pos_id, :mark_px, price)
+    update_unrealized(price)
+  end
+
+  def dump
+    @store.dump(@pos_id)
+  end
+
+  ############
+  private
+  ############
+
+  def persister_name
+    @store.whoami
+  end
+
+  def remove_position_alerts(pos_id)
+    warn "NEED SOME CODE HERE"
+  end
+ 
+  def set_position_defaults(params)
+    params[:current_risk]    ||= params[:init_risk_share]
+    params[:side_multiplier] ||= (params[:side]=="long" ? 1 : -1)
+    params[:setup_support]   ||= (params[:side]=="long" ? 0 : 99999)
+    params[:support]         ||= (params[:setup_support].is_a?(Numeric) ? params[:setup_support]
+                                                                        : (params[:side]=="long" ? 0 : 99999))
+    params[:commissions]     ||= 0
+    params[:quantity]        ||= 0
+    params[:position_qty]    ||= 0
+    params[:avg_entry_px]    ||= 0
+    params[:avg_exit_px]     ||= 0
+    params[:mark_px]         ||= nil
+    params[:realized]        ||= 0
+    params[:unrealized]      ||= 0
+    params[:escrow]          ||= 0
+    params[:status]          ||= 'init'
+  end
+
+  def calc_stop_price(current_price)
+    show_info "PositionProxy#calc_stop_price(#{pos_id})(#{current_price})"
+    case trailing_stop_type
+    when 'atr'
+      new_stop = (current_price.to_f - side_multiplier * current_risk).round(2)
+      new_stop_trigger = (current_price.to_f + side_multiplier * current_risk).round(2)
+      show_info "calc_stop_price(#{pos_id}): new_stop=#{new_stop}, "\
+                "new_stop_trigger=#{new_stop_trigger}"
+    when 'support'
+      new_stop = support.to_f -
+                 side_multiplier * ((current_price.to_f < 10.0) ? 0.12 : 0.25)
+      new_stop_trigger = nil
+    else
+      track "DANGER:calc_stop_price trailing_stop_type:#{trailing_stop_type} UnKnown"
+    end
+    [new_stop, new_stop_trigger]
+  end
+
+  def update_unrealized(price)
+    self.unrealized = (quantity.abs * (price - avg_entry_px) * side_multiplier).round(3)
+  rescue
+    warn "Error updating unrealized for pos: #{pos_id}"
+  end
+
+  def update_realized(price)
+      self.realized    = (realized + qty.to_f * (avg_entry_px - price)).round(3)
+     #self.realized    = (realized + qty.to_f * (price - avg_entry_px)).round(3)
+  end
+
+end
+
